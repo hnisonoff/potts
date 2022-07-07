@@ -1,0 +1,1 @@
+from .potts import Potts
