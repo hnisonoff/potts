@@ -98,27 +98,35 @@ class CategoricalMetropolistHastingsSampler(ABC):
         bs, L, A, device = self.bs, self.L, self.A, self.device
         # get negative energy and proposal distribution
         f_x, forward_proposal = self.compute_neg_energy_and_proposal(X, model)
+        acc_rate = 0
+        per_change = 0
+        X_orig = X.clone()
         # sample from proposal
-        pos_aa_f = forward_proposal.sample()
-        pos_f = (pos_aa_f // A)
-        aa_f = (pos_aa_f - (pos_f * A))
-        # generate full samples from position + category
-        X_f = X.scatter(dim=1,
-                        index=pos_f.unsqueeze(-1),
-                        src=aa_f.unsqueeze(-1))
+        changes = forward_proposal.sample()
+
+        forward_log_p = forward_proposal.log_prob(changes)
+        # reshape to (bs, L, A)
+        changes_r = changes.view(X.size())
+        # get binary indicator (bs, L) indicating which dim was changed
+        changed_ind = changes_r.sum(-1)
+        X_f = X.clone() * (1. - changed_ind[:, :, None]) + changes_r
         # get original category
-        aa_r = X.gather(dim=1, index=pos_f.unsqueeze(-1)).squeeze()
-        pos_aa_r = (pos_f * A + aa_r)
         f_x_f, reverse_proposal = self.compute_neg_energy_and_proposal(
             X_f, model)
-        forward_log_p = forward_proposal.log_prob(pos_aa_f)
-        reverse_log_p = reverse_proposal.log_prob(pos_aa_r)
+        reverse_changes = X * changed_ind[:, :, None]
+        reverse_log_p = reverse_proposal.log_prob(
+            reverse_changes.view(X.size(0), -1))
         log_alpha = (f_x_f - f_x) + (reverse_log_p - forward_log_p)
         log_unifs = torch.log(torch.rand(bs, device=device))
-        accept = (log_alpha >= log_unifs).long()[:, None]
-        samples = (accept * X_f) + ((1 - accept) * X)
+        accept = (log_alpha >= log_unifs).float()[:, None, None]
+        X_temp = X_f.clone()
+        X_f = (accept * X_f) + ((1 - accept) * X)
+        per_change += ((X_f != X).sum(dim=1).sum() / X.shape[0]).item()
+
+        X = X_f.detach()
+
         model.train()
-        return samples, accept
+        return X, accept.squeeze()
 
     def sample_nsteps(self, X, model, n_steps):
         model.eval()
@@ -130,33 +138,37 @@ class CategoricalMetropolistHastingsSampler(ABC):
         X_orig = X.clone()
         for step in range(n_steps):
             # sample from proposal
-            pos_aa_f = forward_proposal.sample()
-            pos_f = (pos_aa_f // A)
-            aa_f = (pos_aa_f - (pos_f * A))
-            # generate full samples from position + category
-            X_f = X.scatter(dim=1,
-                            index=pos_f.unsqueeze(-1),
-                            src=aa_f.unsqueeze(-1))
+            changes = forward_proposal.sample()
+
+            forward_log_p = forward_proposal.log_prob(changes)
+            # reshape to (bs, L, A)
+            changes_r = changes.view(X.size())
+            # get binary indicator (bs, L) indicating which dim was changed
+            changed_ind = changes_r.sum(-1)
+            X_f = X.clone() * (1. - changed_ind[:, :, None]) + changes_r
             # get original category
-            aa_r = X.gather(dim=1, index=pos_f.unsqueeze(-1)).squeeze()
-            pos_aa_r = (pos_f * A + aa_r)
             f_x_f, reverse_proposal = self.compute_neg_energy_and_proposal(
                 X_f, model)
-            forward_log_p = forward_proposal.log_prob(pos_aa_f)
-            reverse_log_p = reverse_proposal.log_prob(pos_aa_r)
+            reverse_changes = X * changed_ind[:, :, None]
+            reverse_log_p = reverse_proposal.log_prob(
+                reverse_changes.view(X.size(0), -1))
             log_alpha = (f_x_f - f_x) + (reverse_log_p - forward_log_p)
             log_unifs = torch.log(torch.rand(bs, device=device))
-            accept = (log_alpha >= log_unifs).long()[:, None]
+            accept = (log_alpha >= log_unifs).float()[:, None, None]
+            X_temp = X_f.clone()
             X_f = (accept * X_f) + ((1 - accept) * X)
             per_change += ((X_f != X).sum(dim=1).sum() / X.shape[0]).item()
-            X = X_f
+
+            X = X_f.detach()
+            accept = accept.squeeze(-1)
+
             probs = (accept * reverse_proposal.probs) + (
                 (1 - accept) * forward_proposal.probs)
-            forward_proposal = Categorical(probs)
+            forward_proposal = OneHotCategorical(probs=probs)
+
             accept = accept.squeeze(-1)
             f_x = (accept * f_x_f) + ((1 - accept) * f_x)
             acc_rate += accept.sum() / accept.shape[0]
-
         model.train()
         print(
             f"Avg Acc: {acc_rate / n_steps:.2f}, Actual Acc: {per_change / n_steps:.2f}"
@@ -174,7 +186,7 @@ class UniformCategoricalSampler(CategoricalMetropolistHastingsSampler):
     X[i, j] is an integer between 0 and K
     '''
 
-    def __init__(self, bs, L, A, device):
+    def __init__(self, L, A, device):
         '''
         bs: batch size
         L: number of positions
@@ -188,9 +200,9 @@ class UniformCategoricalSampler(CategoricalMetropolistHastingsSampler):
 
     def compute_neg_energy_and_proposal(self, X, model):
         f_x = -model(X)
-        bs, L, A, device = self.bs, self.L, self.A, self.device
-        probs = torch.ones(bs, L * A, device=device) * 1 / (L * A)
-        dist = Categorical(probs)
+        L, A, device = self.L, self.A, self.device
+        probs = torch.ones(X.size(0), L * A, device=device) * 1 / (L * A)
+        dist = OneHotCategorical(probs)
         return f_x, dist
 
 
@@ -373,81 +385,6 @@ class GWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
         self.L = L
         self.A = A
         self.device = device
-
-    def sample(self, X, model):
-        model.eval()
-        bs, L, A, device = self.bs, self.L, self.A, self.device
-        # get negative energy and proposal distribution
-        f_x, forward_proposal = self.compute_neg_energy_and_proposal(X, model)
-        # sample from proposal
-        pos_aa_f = forward_proposal.sample()
-
-        pos_f = (pos_aa_f // A)
-        aa_f = (pos_aa_f - (pos_f * A))
-        # generate full samples from position + category
-        X_f = X.scatter(dim=1,
-                        index=pos_f.unsqueeze(-1),
-                        src=aa_f.unsqueeze(-1))
-        # get original category
-        aa_r = X.gather(dim=1, index=pos_f.unsqueeze(-1)).squeeze()
-        pos_aa_r = (pos_f * A + aa_r)
-        f_x_f, reverse_proposal = self.compute_neg_energy_and_proposal(
-            X_f, model)
-        forward_log_p = forward_proposal.log_prob(pos_aa_f)
-        reverse_log_p = reverse_proposal.log_prob(pos_aa_r)
-        log_alpha = (f_x_f - f_x) + (reverse_log_p - forward_log_p)
-        log_unifs = torch.log(torch.rand(bs, device=device))
-        accept = (log_alpha >= log_unifs).long()[:, None]
-        samples = (accept * X_f) + ((1 - accept) * X)
-        model.train()
-        return samples, accept
-
-    def sample_nsteps(self, X, model, n_steps):
-        model.eval()
-        bs, L, A, device = self.bs, self.L, self.A, self.device
-        # get negative energy and proposal distribution
-        f_x, forward_proposal = self.compute_neg_energy_and_proposal(X, model)
-        acc_rate = 0
-        per_change = 0
-        X_orig = X.clone()
-        for step in range(n_steps):
-            # sample from proposal
-            changes = forward_proposal.sample()
-
-            forward_log_p = forward_proposal.log_prob(changes)
-            # reshape to (bs, L, A)
-            changes_r = changes.view(X.size())
-            # get binary indicator (bs, L) indicating which dim was changed
-            changed_ind = changes_r.sum(-1)
-            X_f = X.clone() * (1. - changed_ind[:, :, None]) + changes_r
-            # get original category
-            f_x_f, reverse_proposal = self.compute_neg_energy_and_proposal(
-                X_f, model)
-            reverse_changes = X * changed_ind[:, :, None]
-            reverse_log_p = reverse_proposal.log_prob(
-                reverse_changes.view(X.size(0), -1))
-            log_alpha = (f_x_f - f_x) + (reverse_log_p - forward_log_p)
-            log_unifs = torch.log(torch.rand(bs, device=device))
-            accept = (log_alpha >= log_unifs).float()[:, None, None]
-            X_temp = X_f.clone()
-            X_f = (accept * X_f) + ((1 - accept) * X)
-            per_change += ((X_f != X).sum(dim=1).sum() / X.shape[0]).item()
-
-            X = X_f.detach()
-            accept = accept.squeeze(-1)
-
-            probs = (accept * reverse_proposal.probs) + (
-                (1 - accept) * forward_proposal.probs)
-            forward_proposal = OneHotCategorical(probs=probs)
-
-            accept = accept.squeeze(-1)
-            f_x = (accept * f_x_f) + ((1 - accept) * f_x)
-            acc_rate += accept.sum() / accept.shape[0]
-        model.train()
-        print(
-            f"Avg Acc: {acc_rate / n_steps:.2f}, Actual Acc: {per_change / n_steps:.2f}"
-        )
-        return X
 
     def compute_neg_energy_and_proposal(self, X, model):
         bs, L, A, device = self.bs, self.L, self.A, self.device
