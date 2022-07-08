@@ -391,6 +391,38 @@ class GWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
         X.requires_grad_()
         f_x = -model(X)
         grad_f_x = torch.autograd.grad(f_x.sum(), X, retain_graph=True)[0]
+
+        with torch.no_grad():
+            d_tilde = (grad_f_x - (X * grad_f_x).sum(dim=-1).unsqueeze(dim=-1))
+        probs = torch.softmax(d_tilde.reshape(d_tilde.shape[0], -1) / 2,
+                              dim=-1)
+        dist = OneHotCategorical(logits=d_tilde.reshape(d_tilde.shape[0], -1) /
+                                 2)
+        return f_x, dist
+
+
+class PottsGWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
+    '''
+    Input is size (batch_size, length)
+    X[i, j] is an integer between 0 and K
+    '''
+
+    def __init__(self, bs, L, A, device):
+        '''
+        bs: batch size
+        L: number of positions
+        A: number of categories
+        '''
+        super(PottsGWGCategoricalSampler, self).__init__()
+        self.bs = bs
+        self.L = L
+        self.A = A
+        self.device = device
+
+    def compute_neg_energy_and_proposal(self, X, model):
+        bs, L, A, device = self.bs, self.L, self.A, self.device
+        X.requires_grad_()
+        f_x, grad_f_x = model.neg_energy_and_grad_f_x(X)
         with torch.no_grad():
             d_tilde = (grad_f_x - (X * grad_f_x).sum(dim=-1).unsqueeze(dim=-1))
         probs = torch.softmax(d_tilde.reshape(d_tilde.shape[0], -1) / 2,
