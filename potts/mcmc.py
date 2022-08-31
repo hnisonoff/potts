@@ -19,7 +19,7 @@ class RandomProposalDistribution(ProposalDistribution, nn.Module):
     '''
 
     def __init__(self, bs, L, A, device):
-        super(RandomProposalDistribution, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.A = A
@@ -46,7 +46,7 @@ class ReplayBuffer(object):
                  length,
                  num_cats,
                  reinit_freq=0.05):
-        super(ReplayBuffer, self).__init__()
+        super().__init__()
         self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.length = length
@@ -170,9 +170,9 @@ class CategoricalMetropolistHastingsSampler(ABC):
             f_x = (accept * f_x_f) + ((1 - accept) * f_x)
             acc_rate += accept.sum() / accept.shape[0]
         model.train()
-        print(
-            f"Avg Acc: {acc_rate / n_steps:.2f}, Actual Acc: {per_change / n_steps:.2f}"
-        )
+        # print(
+        #     f"Avg Acc: {acc_rate / n_steps:.2f}, Actual Acc: {per_change / n_steps:.2f}"
+        # )
         return X
 
     @abstractmethod
@@ -186,13 +186,13 @@ class UniformCategoricalSampler(CategoricalMetropolistHastingsSampler):
     X[i, j] is an integer between 0 and K
     '''
 
-    def __init__(self, L, A, device):
+    def __init__(self, bs, L, A, device):
         '''
         bs: batch size
         L: number of positions
         A: number of categories
         '''
-        super(UniformCategoricalSampler, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.A = A
@@ -283,7 +283,7 @@ class UniformBinarySampler(BinaryMetropolistHastingsSampler):
         bs: batch size
         L: number of positions
         '''
-        super(UniformBinarySampler, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.device = device
@@ -307,7 +307,7 @@ class GWGBinarySampler(BinaryMetropolistHastingsSampler):
         bs: batch size
         L: number of positions
         '''
-        super(GWGBinarySampler, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.device = device
@@ -380,7 +380,7 @@ class GWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
         L: number of positions
         A: number of categories
         '''
-        super(GWGCategoricalSampler, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.A = A
@@ -413,7 +413,7 @@ class PottsGWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
         L: number of positions
         A: number of categories
         '''
-        super(PottsGWGCategoricalSampler, self).__init__()
+        super().__init__()
         self.bs = bs
         self.L = L
         self.A = A
