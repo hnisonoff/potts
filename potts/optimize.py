@@ -23,6 +23,7 @@ class RecombinationLibrary():
         self.A = A
         assert crossovers[-1] <= seq_len
         if crossovers[-1] < seq_len:
+            crossovers = list(crossovers)
             crossovers.append(seq_len)
 
         self.crossovers = crossovers
@@ -113,7 +114,7 @@ def simulated_annealing(model,
     sub_W = W[positions_in_block][:, positions_in_block]
     sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
 
-    sub_model = Potts(h=sub_h, W=sub_W)
+    sub_model = Potts(h=new_h, W=sub_W)
     sub_model = sub_model.to(device)
     sub_model.temp = temp
 
