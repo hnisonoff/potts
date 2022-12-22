@@ -87,4 +87,4 @@ def get_petase_constrained_residue_info(rl, aa_to_i):
     # Get all residues to keep fixed and all aa idxs to fix
     all_potts_idx_to_fix = potts_idx_to_fix_active + potts_idx_to_fix_endpoints
     all_aa_idx_to_fix = aa_idx_to_fix_active + aa_idx_to_fix_endpoints
-    return all_potts_idx_to_fix, all_aa_idx_to_fix
+    return all_potts_idx_to_fix, all_aa_idx_to_fix, potts_idx_to_fix_active, potts_idx_to_fix_endpoints

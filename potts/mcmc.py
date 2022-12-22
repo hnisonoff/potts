@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical, OneHotCategorical
 from abc import ABC, abstractmethod
+import numpy as np
+from tqdm import tqdm
 
 
 class ProposalDistribution(ABC):
@@ -128,7 +130,7 @@ class CategoricalMetropolistHastingsSampler(ABC):
         model.train()
         return X, accept.squeeze()
 
-    def sample_nsteps(self, X, model, n_steps):
+    def sample_nsteps(self, X, model, n_steps, verbose=False):
         model.eval()
         bs, L, A, device = self.bs, self.L, self.A, self.device
         # get negative energy and proposal distribution
@@ -136,7 +138,11 @@ class CategoricalMetropolistHastingsSampler(ABC):
         acc_rate = 0
         per_change = 0
         X_orig = X.clone()
-        for step in range(n_steps):
+        if verbose:
+            itr = tqdm(range(n_steps))
+        else:
+            itr = range(n_steps)
+        for step in itr:
             # sample from proposal
             changes = forward_proposal.sample()
 
@@ -421,10 +427,58 @@ class PottsGWGCategoricalSampler(CategoricalMetropolistHastingsSampler):
 
     def compute_neg_energy_and_proposal(self, X, model):
         bs, L, A, device = self.bs, self.L, self.A, self.device
+        #X.requires_grad_()
+        with torch.no_grad():
+            f_x, grad_f_x = model.neg_energy_and_grad_f_x(X)
+        with torch.no_grad():
+            d_tilde = (grad_f_x - (X * grad_f_x).sum(dim=-1).unsqueeze(dim=-1))
+        probs = torch.softmax(d_tilde.reshape(d_tilde.shape[0], -1) / 2,
+                              dim=-1)
+        # dist = OneHotCategorical(logits=d_tilde.reshape(d_tilde.shape[0], -1) /
+        #                          2)
+        dist = OneHotCategorical(probs=probs)
+        return f_x, dist
+
+
+class PottsGWGHardWallCategoricalSampler(CategoricalMetropolistHastingsSampler
+                                         ):
+    '''
+    Input is size (batch_size, length)
+    X[i, j] is an integer between 0 and K
+    '''
+
+    def __init__(self, bs, L, A, device, wt_onehot, max_mutations=20):
+        '''
+        bs: batch size
+        L: number of positions
+        A: number of categories
+        '''
+        super().__init__()
+        self.bs = bs
+        self.L = L
+        self.A = A
+        self.device = device
+        self.wt_onehot = wt_onehot.to(device)
+        self.max_mutations = max_mutations
+
+    def compute_neg_energy_and_proposal(self, X, model):
+        bs, L, A, device = self.bs, self.L, self.A, self.device
         X.requires_grad_()
         f_x, grad_f_x = model.neg_energy_and_grad_f_x(X)
         with torch.no_grad():
             d_tilde = (grad_f_x - (X * grad_f_x).sum(dim=-1).unsqueeze(dim=-1))
+
+        num_mutations = (self.L - (X.reshape(
+            (-1, self.L * self.A)) @ self.wt_onehot.reshape(
+                (-1, self.L * self.A)).T).reshape(-1))
+        mask = (num_mutations == self.max_mutations)
+        # only allow mutations to wild type
+        to_add = (-(self.wt_onehot == 0).to(torch.float) *
+                  np.inf).unsqueeze(0).repeat(d_tilde.shape[0], 1, 1)
+        # only add if we are at the maximum number of mutations
+        to_add = torch.nan_to_num(
+            mask.unsqueeze(1).unsqueeze(2).to(torch.float) * to_add, 0)
+        d_tilde += to_add
         probs = torch.softmax(d_tilde.reshape(d_tilde.shape[0], -1) / 2,
                               dim=-1)
         dist = OneHotCategorical(logits=d_tilde.reshape(d_tilde.shape[0], -1) /

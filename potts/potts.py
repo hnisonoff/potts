@@ -39,15 +39,22 @@ class Potts(torch.nn.Module):
             self.sym = Symmetric(L, A)
             parametrize.register_parametrization(self.W, "weight", self.sym)
         else:
-            h = torch.tensor(h, dtype=torch.float)
+            h = h.clone().detach().to(torch.float)
+            #h = torch.tensor(h, dtype=torch.float)
             assert (h.ndim == 2)
             self.L, self.A = h.shape
             self.h = nn.Parameter(h.reshape(-1))
-            W = torch.tensor(W, dtype=torch.float)
+            W = W.clone().detach().to(torch.float)
+            #W = torch.tensor(W, dtype=torch.float)
             assert (W.ndim == 2)
             assert W.shape[0] == W.shape[1] == self.L * self.A
             self.W = nn.Linear(self.L * self.A, self.L * self.A, bias=False)
             self.W.weight = nn.Parameter(W)
+            if False:
+                self.sym = Symmetric(self.L, self.A)
+                parametrize.register_parametrization(self.W, "weight",
+                                                     self.sym)
+            #self.W.weight = nn.Parameter(W)
 
         self.temp = temp
 
@@ -55,16 +62,31 @@ class Potts(torch.nn.Module):
         return self.W.weight.reshape(
             (self.L, self.A, self.L, self.A)).transpose(1, 2)
 
-    def pseudolikelihood(self, X):
-        tmp = (-(self.W(torch.flatten(X, 1, 2)) + self.h)).reshape(
+    def pseudolikelihood(self, X, mask=None):
+        tmp = (-((self.W(torch.flatten(X, 1, 2)) / 2) + self.h)).reshape(
             -1, self.L, self.A)
         tmp = X * F.log_softmax(tmp, dim=2)
+        if not (mask is None):
+            tmp = tmp * mask.unsqueeze(-1)
         return tmp.reshape(-1, self.L * self.A).sum(dim=1)
+
+    def pseudolikelihood_debug(self, X, mask=None):
+        tmp = (-((self.W(torch.flatten(X, 1, 2)) / 2) + self.h)).reshape(
+            -1, self.L, self.A)
+        return F.log_softmax(tmp, dim=2)
 
     def forward(self, X, beta=1.0):
         energy = X * ((self.W(torch.flatten(X, 1, 2)) * beta / 2.0) +
                       self.h).reshape(-1, self.L, self.A)
         return energy.reshape(-1, self.L * self.A).sum(dim=1)
+
+    def single_pairwise_energy(self, X, beta=1.0):
+        pairwise = (X * self.W(torch.flatten(X, 1, 2)).reshape(
+            -1, self.L, self.A)).reshape(
+                -1, self.L * self.A).sum(dim=1) * beta / 2.0
+        single = (X * self.h.reshape(-1, self.L, self.A)).reshape(
+            -1, self.L * self.A).sum(dim=1)
+        return single, pairwise
 
     def grad_f_x(self, X):
         '''
