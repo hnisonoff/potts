@@ -8,6 +8,7 @@ from esm.inverse_folding.util import CoordBatchConverter
 import torch
 import torch.nn.functional as F
 from .potts import Potts
+from esm import pretrained
 
 ESMINV_MODEL, ALPHABET = esm.pretrained.esm_if1_gvp4_t16_142M_UR50()
 ALPHABET_PROTEIN = '-ACDEFGHIKLMNPQRSTVWY'

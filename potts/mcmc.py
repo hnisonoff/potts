@@ -96,7 +96,11 @@ class ReplayBuffer(object):
 class CategoricalMetropolistHastingsSampler(ABC):
 
     def sample(self, X, model):
-        model.eval()
+        if type(model) is tuple:
+            for m in model:
+                m.eval()
+        else:
+            model.eval()
         bs, L, A, device = self.bs, self.L, self.A, self.device
         # get negative energy and proposal distribution
         f_x, forward_proposal = self.compute_neg_energy_and_proposal(X, model)
@@ -112,26 +116,45 @@ class CategoricalMetropolistHastingsSampler(ABC):
         # get binary indicator (bs, L) indicating which dim was changed
         changed_ind = changes_r.sum(-1)
         X_f = X.clone() * (1. - changed_ind[:, :, None]) + changes_r
-        # get original category
+
         f_x_f, reverse_proposal = self.compute_neg_energy_and_proposal(
             X_f, model)
         reverse_changes = X * changed_ind[:, :, None]
         reverse_log_p = reverse_proposal.log_prob(
             reverse_changes.view(X.size(0), -1))
         log_alpha = (f_x_f - f_x) + (reverse_log_p - forward_log_p)
+
+        if hasattr(self, 'max_contrain_muts'):
+            L = len(self.residues_to_constrain)
+            num_mutations_constrain = (
+                L -
+                (X[:, self.residues_to_constrain - 1, :].reshape(
+                    (-1, L * self.A))
+                 @ self.wt_onehot[self.residues_to_constrain - 1, :].reshape(
+                     (-1, L * self.A)).T).reshape(-1))
+            mask = (num_mutations_constrain > self.max_constrain_muts)
+            log_alpha += mask.float() * 1000000
         log_unifs = torch.log(torch.rand(bs, device=device))
         accept = (log_alpha >= log_unifs).float()[:, None, None]
         X_temp = X_f.clone()
         X_f = (accept * X_f) + ((1 - accept) * X)
         per_change += ((X_f != X).sum(dim=1).sum() / X.shape[0]).item()
-
         X = X_f.detach()
 
-        model.train()
+        if type(model) is tuple:
+            for m in model:
+                m.train()
+        else:
+            model.train()
+
         return X, accept.squeeze()
 
     def sample_nsteps(self, X, model, n_steps, verbose=False):
-        model.eval()
+        if type(model) is tuple:
+            for m in model:
+                m.eval()
+        else:
+            model.eval()
         bs, L, A, device = self.bs, self.L, self.A, self.device
         # get negative energy and proposal distribution
         f_x, forward_proposal = self.compute_neg_energy_and_proposal(X, model)
@@ -175,7 +198,12 @@ class CategoricalMetropolistHastingsSampler(ABC):
             accept = accept.squeeze(-1)
             f_x = (accept * f_x_f) + ((1 - accept) * f_x)
             acc_rate += accept.sum() / accept.shape[0]
-        model.train()
+
+        if type(model) is tuple:
+            for m in model:
+                m.train()
+        else:
+            model.train()
         # print(
         #     f"Avg Acc: {acc_rate / n_steps:.2f}, Actual Acc: {per_change / n_steps:.2f}"
         # )

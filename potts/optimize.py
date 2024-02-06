@@ -1,3 +1,4 @@
+import time
 import torch
 import numpy as np
 from itertools import combinations, product
@@ -327,11 +328,12 @@ def avg_energy_by_formula(parents, crossovers, is_coef, p_coef):
                 parents.flatten()]) / n_parents
     for start, end in zip(crossovers[:-1], crossovers[1:]):
         within_block_pairs = list(combinations(range(start, end), 2))
-        i, j = zip(*within_block_pairs)
-        k, l = parents[:, i].flatten(), parents[:, j].flatten()
-        i = np.concatenate([i for _ in range(n_parents)])
-        j = np.concatenate([j for _ in range(n_parents)])
-        E += np.sum(p_coef[i, j, k, l]) / n_parents
+        if within_block_pairs:
+            i, j = zip(*within_block_pairs)
+            k, l = parents[:, i].flatten(), parents[:, j].flatten()
+            i = np.concatenate([i for _ in range(n_parents)])
+            j = np.concatenate([j for _ in range(n_parents)])
+            E += np.sum(p_coef[i, j, k, l]) / n_parents
 
         if seq_len > end:
             between_block_pairs = list(
@@ -428,8 +430,10 @@ class BranchAndBoundToulbar2():
         while not self.pq.empty():
             all_items.append(self.pq.get())
         self.pq = None
-        scores = Parallel(n_jobs=-1)(delayed(self.score_node)(x)
-                                     for x in new_nodes)
+        # scores = Parallel(n_jobs=-1,
+        #                   prefer='threads')(delayed(self.score_node)(x)
+        #                                     for x in new_nodes)
+        scores = [self.score_node(x) for x in new_nodes]
         self.pq = PriorityQueue()
         for x in all_items:
             self.pq.put(x)
@@ -450,6 +454,110 @@ class BranchAndBoundToulbar2():
             sub_model = self.generate_reduced_model(node)
             lg_file = potts_to_LG_file(sub_model)
             map_state = run_toulbar2(lg_file)
+            total_state = node + map_state
+            lg_file.close()
+            with torch.no_grad():
+                X = torch.tensor(total_state)
+                X = torch.nn.functional.one_hot(X, num_classes=self.A).to(
+                    torch.float).to(self.device)
+                energy = self.model(X.unsqueeze(0))[0].cpu().item()
+                return energy
+
+    def generate_reduced_model(self, node):
+        h = self.h.copy()
+        W = self.W.copy()
+        A = self.A
+        L = self.L
+
+        num_pos_fixed = len(node)
+        sub_L = L - num_pos_fixed
+        assert (sub_L > 0)
+        remaining_positions = [i for i in range(num_pos_fixed, L)]
+        assert (len(remaining_positions) > 0)
+        sub_h = h[remaining_positions]
+        sub_W = W[remaining_positions][:, remaining_positions]
+        sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
+
+        h_tilde = np.zeros((sub_L, A))
+        for pos_i in range(num_pos_fixed):
+            aa_i = node[pos_i]
+            for pos_j in range(num_pos_fixed, L):
+                for aa_j in range(A):
+                    h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
+                                                              aa_i, aa_j]
+        sub_h += h_tilde
+        new_model = Potts(h=torch.tensor(sub_h), W=torch.tensor(sub_W))
+        return new_model
+
+    def reached_leaf_node(self, node):
+        return len(node) == self.L
+
+
+class BranchAndBoundMplp():
+
+    def __init__(self, model):
+        self.model = model.cpu()
+        self.L = model.L
+        self.A = model.A
+        self.pq = PriorityQueue()
+        self.h = model.h.reshape(
+            (self.L, self.A)).detach().cpu().numpy().copy()
+        self.W = model.reshape_to_L_L_A_A().detach().cpu().numpy().copy()
+        self.device = "cpu"
+        # leaf node
+        self.pq.put((np.inf, []))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while True:
+            energy, node = self.pq.get()
+            if self.reached_leaf_node(node):
+                return energy, node
+            else:
+                self.expand_node(node)
+
+    def expand_node(self, node):
+        new_nodes = []
+        for i in range(self.A):
+            new_node = node.copy()
+            new_node.append(i)
+            new_nodes.append(new_node)
+
+        # multiprocessing cannot use queues
+        all_items = []
+        while not self.pq.empty():
+            all_items.append(self.pq.get())
+        self.pq = None
+        if False:
+            scores = Parallel(n_jobs=-1,
+                              prefer='threads')(delayed(self.score_node)(x)
+                                                for x in new_nodes)
+        else:
+            scores = [self.score_node(x) for x in new_nodes]
+        self.pq = PriorityQueue()
+        for x in all_items:
+            self.pq.put(x)
+        for score, new_node in zip(scores, new_nodes):
+            self.pq.put((score, new_node))
+
+    def score_node(self, node):
+        if self.reached_leaf_node(node):
+            total_state = node
+            with torch.no_grad():
+                X = torch.tensor(total_state)
+                X = torch.nn.functional.one_hot(X, num_classes=self.A).to(
+                    torch.float).to(self.device)
+                energy = self.model(X.unsqueeze(0))[0].cpu().item()
+                return energy
+        else:
+            # score node by solving ILP
+            sub_model = self.generate_reduced_model(node)
+            pgmpy_potts = potts_to_pgmpy(sub_model)
+            inference = Mplp(pgmpy_potts)
+            map_d = inference.map_query()
+            map_state = [map_d[f"x_{i}"] for i in range(len(map_d))]
             total_state = node + map_state
             with torch.no_grad():
                 X = torch.tensor(total_state)
@@ -481,7 +589,8 @@ class BranchAndBoundToulbar2():
                     h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
                                                               aa_i, aa_j]
         sub_h += h_tilde
-        new_model = Potts(h=sub_h, W=sub_W)
+        new_model = Potts(h=torch.tensor(sub_h) - (1e-6),
+                          W=torch.tensor(sub_W) - (1e-6))
         return new_model
 
     def reached_leaf_node(self, node):
