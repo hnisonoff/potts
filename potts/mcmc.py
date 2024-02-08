@@ -193,7 +193,7 @@ class CategoricalMetropolistHastingsSampler(ABC):
 
             probs = (accept * reverse_proposal.probs) + (
                 (1 - accept) * forward_proposal.probs)
-            forward_proposal = OneHotCategorical(probs=probs)
+            forward_proposal = OneHotCategorical(probs=probs, validate_args=False)
 
             accept = accept.squeeze(-1)
             f_x = (accept * f_x_f) + ((1 - accept) * f_x)
