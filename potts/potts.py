@@ -4,7 +4,7 @@ import torch.nn.utils.parametrize as parametrize
 import torch.nn.functional as F
 import warnings
 from torch import Tensor, autograd
-from scipy.optimize import minimize_scalar
+
 
 
 
@@ -378,6 +378,7 @@ def owlqn(fun, x0, alpha=1., lr=1, max_iter=20, xtol=1e-5, history_size=100,
 
     """
     #assert x0.dim() == 2
+    from scipy.optimize import minimize_scalar
     verbose = int(verbose)
     if ls_options is None:
         ls_options = {}
@@ -578,6 +579,14 @@ def get_subset_potts(h, W, idxs_to_keep, wt_ind):
     sub_W = sub_W.transpose(1,2).reshape(sub_L * A, sub_L * A)
     return new_h, sub_W
 
+
+def get_subset_potts(model, idxs_to_keep, wt_ind):
+    L, A = model.L, model.A
+    h = model.h.reshape(L, A)
+    W = model.W.weight
+    h_new, W_new = get_subset_potts_optimized(h, W, idxs_to_keep, wt_ind)
+    sub_potts = Potts(h=h_new, W=W_new)
+    return sub_potts
 
 def get_subset_potts_optimized(h, W, idxs_to_keep, wt_ind):
     assert(h.ndim == 2)

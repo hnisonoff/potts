@@ -4,10 +4,8 @@ import numpy as np
 from itertools import combinations, product
 from .mcmc import GWGCategoricalSampler, ReplayBuffer, CategoricalGibbsSampler, OneHotCategorical, CategoricalMetropolistHastingsSampler, PottsGWGCategoricalSampler, PottsGWGHardWallCategoricalSampler
 from .potts import Potts
+from .potts import get_subset_potts_optimized
 from collections import Counter
-from pgmpy.models import MarkovNetwork
-from pgmpy.factors.discrete import DiscreteFactor
-from pgmpy.inference import Mplp
 from tempfile import NamedTemporaryFile
 import subprocess
 from queue import PriorityQueue
@@ -120,6 +118,9 @@ def get_reduced_potts(model, rl, block_to_update, seq_idx_to_update, device,
 
 
 def potts_to_pgmpy(model):
+    from pgmpy.models import MarkovNetwork
+    from pgmpy.factors.discrete import DiscreteFactor
+    from pgmpy.inference import Mplp
     L = model.L
     A = model.A
     h = model.h.reshape((L, A)).detach().cpu().numpy().copy()
@@ -265,6 +266,7 @@ def coordinate_descent_mplp(model,
                             seq_idx_to_update,
                             device='cuda',
                             entropy_reg=0.005):
+    from pgmpy.inference import Mplp
     sub_model = get_reduced_potts(model, rl, block_to_update,
                                   seq_idx_to_update, device, entropy_reg)
     pgmpy_potts = potts_to_pgmpy(sub_model)
@@ -474,27 +476,35 @@ class BranchAndBoundToulbar2():
         assert (sub_L > 0)
         remaining_positions = [i for i in range(num_pos_fixed, L)]
         assert (len(remaining_positions) > 0)
-        sub_h = h[remaining_positions]
-        sub_W = W[remaining_positions][:, remaining_positions]
-        sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
 
-        h_tilde = np.zeros((sub_L, A))
-        for pos_i in range(num_pos_fixed):
-            aa_i = node[pos_i]
-            for pos_j in range(num_pos_fixed, L):
-                for aa_j in range(A):
-                    h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
-                                                              aa_i, aa_j]
-        sub_h += h_tilde
-        new_model = Potts(h=torch.tensor(sub_h), W=torch.tensor(sub_W))
-        return new_model
+        if False:
+            sub_h = h[remaining_positions]
+            sub_W = W[remaining_positions][:, remaining_positions]
+            sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
+
+            h_tilde = np.zeros((sub_L, A))
+            for pos_i in range(num_pos_fixed):
+                aa_i = node[pos_i]
+                for pos_j in range(num_pos_fixed, L):
+                    for aa_j in range(A):
+                        h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
+                                                                  aa_i, aa_j]
+            sub_h += h_tilde
+            new_model = Potts(h=torch.tensor(sub_h), W=torch.tensor(sub_W))
+            return new_model
+        else:
+            sub_h, sub_W = get_subset_potts_optimized(torch.tensor(h), torch.tensor(W).transpose(1,2).reshape(L*A, L*A), np.asarray(remaining_positions), np.asarray(node + [0 for _ in range(L - len(node))]))
+            subset_model = Potts(sub_h.shape[0], 21)
+            subset_model.load_from_weights(h=sub_h, W=sub_W)
+            return subset_model
+
+
 
     def reached_leaf_node(self, node):
         return len(node) == self.L
 
 
 class BranchAndBoundMplp():
-
     def __init__(self, model):
         self.model = model.cpu()
         self.L = model.L
@@ -543,6 +553,7 @@ class BranchAndBoundMplp():
             self.pq.put((score, new_node))
 
     def score_node(self, node):
+        from pgmpy.inference import Mplp
         if self.reached_leaf_node(node):
             total_state = node
             with torch.no_grad():
@@ -571,27 +582,32 @@ class BranchAndBoundMplp():
         W = self.W.copy()
         A = self.A
         L = self.L
+        if False:
+            num_pos_fixed = len(node)
+            sub_L = L - num_pos_fixed
+            assert (sub_L > 0)
+            remaining_positions = [i for i in range(num_pos_fixed, L)]
+            assert (len(remaining_positions) > 0)
+            sub_h = h[remaining_positions]
+            sub_W = W[remaining_positions][:, remaining_positions]
+            sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
 
-        num_pos_fixed = len(node)
-        sub_L = L - num_pos_fixed
-        assert (sub_L > 0)
-        remaining_positions = [i for i in range(num_pos_fixed, L)]
-        assert (len(remaining_positions) > 0)
-        sub_h = h[remaining_positions]
-        sub_W = W[remaining_positions][:, remaining_positions]
-        sub_W = sub_W.transpose((0, 2, 1, 3)).reshape(sub_L * A, sub_L * A)
-
-        h_tilde = np.zeros((sub_L, A))
-        for pos_i in range(num_pos_fixed):
-            aa_i = node[pos_i]
-            for pos_j in range(num_pos_fixed, L):
-                for aa_j in range(A):
-                    h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
-                                                              aa_i, aa_j]
-        sub_h += h_tilde
-        new_model = Potts(h=torch.tensor(sub_h) - (1e-6),
-                          W=torch.tensor(sub_W) - (1e-6))
-        return new_model
+            h_tilde = np.zeros((sub_L, A))
+            for pos_i in range(num_pos_fixed):
+                aa_i = node[pos_i]
+                for pos_j in range(num_pos_fixed, L):
+                    for aa_j in range(A):
+                        h_tilde[pos_j - num_pos_fixed, aa_j] += W[pos_i, pos_j,
+                                                                  aa_i, aa_j]
+            sub_h += h_tilde
+            new_model = Potts(h=torch.tensor(sub_h) - (1e-6),
+                              W=torch.tensor(sub_W) - (1e-6))
+            return new_model
+        else:
+            sub_h, sub_W = get_subset_potts_optimized(torch.tensor(h), torch.tensor(W).transpose(1,2).reshape(L*A, L*A), np.asarray(remaining_positions), np.asarray(node + [0 for _ in range(L - len(node))]))
+            subset_model = Potts(sub_h.shape[0], 21)
+            subset_model.load_from_weights(h=sub_h, W=sub_W)
+            return subset_model
 
     def reached_leaf_node(self, node):
         return len(node) == self.L
